@@ -5,13 +5,27 @@ from schemas.contracts import (
     AffordabilityBand,
     Transaction,
     TransactionHistoryPayload,
+    TransactionType,
 )
 
 from scoring.models import AffordabilityResult, IncomeProfile
 
 
 def _inflows(transactions: List[Transaction]) -> List[Transaction]:
-    return [txn for txn in transactions if txn.type.value == "INFLOW"]
+    return [
+        txn for txn in transactions
+        if txn.type == TransactionType.INFLOW
+    ]
+
+
+def _monthly_amounts(transactions: List[Transaction]) -> List[float]:
+    monthly_totals: dict[str, float] = {}
+
+    for txn in transactions:
+        month = txn.date[:7]
+        monthly_totals[month] = monthly_totals.get(month, 0.0) + txn.amount
+
+    return list(monthly_totals.values())
 
 
 def build_income_profile(
@@ -28,25 +42,26 @@ def build_income_profile(
             transaction_count=0,
         )
 
-    amounts = [txn.amount for txn in inflows]
+    monthly_amounts = _monthly_amounts(inflows)
 
-    average = sum(amounts) / len(amounts)
-    med = median(amounts)
+    average = sum(monthly_amounts) / len(monthly_amounts)
+    med = median(monthly_amounts)
 
     deviation = (
-        sum(abs(amount - average) for amount in amounts)
-        / len(amounts)
-        if amounts
-        else 0.0
+        sum(abs(amount - average) for amount in monthly_amounts)
+        / len(monthly_amounts)
     )
 
     stability = max(
         0.0,
-        min(1.0, 1.0 - (deviation / average if average else 1.0)),
+        min(
+            1.0,
+            1.0 - (deviation / average if average else 1.0),
+        ),
     )
 
     return IncomeProfile(
-        total_inflow=sum(amounts),
+        total_inflow=sum(txn.amount for txn in inflows),
         monthly_average=average,
         monthly_median=med,
         stability=stability,
@@ -72,7 +87,8 @@ def calculate_affordability(
         )
 
     reliable_income = (
-        profile.monthly_median * (0.7 + (0.3 * profile.stability))
+        profile.monthly_median
+        * (0.7 + (0.3 * profile.stability))
     )
 
     score = min(
@@ -90,16 +106,23 @@ def calculate_affordability(
     else:
         band = AffordabilityBand.LOW.value
 
-    confidence = min(
+    history_confidence = min(
         1.0,
-        (profile.transaction_count / 20) * 0.6
-        + profile.stability * 0.4,
+        profile.transaction_count / 20,
+    )
+
+    confidence = (
+        history_confidence * 0.6
+        + profile.stability * 0.4
     )
 
     explanation = [
         f"Observed {profile.transaction_count} income transactions.",
+        f"Average monthly inflow is approximately "
+        f"{profile.monthly_average:.2f}.",
         f"Income stability is {profile.stability:.0%}.",
-        f"Reliable income baseline is approximately {reliable_income:.2f}.",
+        f"Reliable income baseline is approximately "
+        f"{reliable_income:.2f}.",
     ]
 
     if payload.income_seasonality_flag.value != "UNCLASSIFIED":
@@ -113,5 +136,5 @@ def calculate_affordability(
         band=band,
         confidence=round(confidence, 2),
         reliable_income=round(reliable_income, 2),
-        explanation=explanation[:4],
+        explanation=explanation[:5],
     )
