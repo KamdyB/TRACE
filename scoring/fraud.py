@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from schemas.contracts import (
@@ -36,7 +36,7 @@ def detect_fraud_patterns(
         return FraudSignal(
             consent_id=consent_id,
             fraud_signal_id=str(uuid4()),
-            generated_at=datetime.utcnow().isoformat() + "Z",
+            generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             risk_band=FraudRiskBand.LOW,
             confidence=0.0,
             explanation=[
