@@ -1,0 +1,186 @@
+[1mdiff --git a/scoring/fraud.py b/scoring/fraud.py[m
+[1mindex 7b8ea03..61a5696 100644[m
+[1m--- a/scoring/fraud.py[m
+[1m+++ b/scoring/fraud.py[m
+[36m@@ -14,59 +14,147 @@[m [mdef detect_fraud_patterns([m
+     consent_id: str,[m
+     transactions: list[Transaction],[m
+ ) -> FraudSignal:[m
+[31m-    """Detect transaction patterns that may indicate score manipulation."""[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Detect transaction patterns that may indicate manufactured income.[m
+[32m+[m
+[32m+[m[32m    Consistency alone is not treated as fraud evidence because legitimate[m
+[32m+[m[32m    salaries and other recurring income streams are naturally consistent.[m
+[32m+[m
+[32m+[m[32m    Risk increases when independent suspicious characteristics co-occur.[m
+[32m+[m[32m    """[m
+ [m
+     explanations: list[str] = [][m
+     risk_points = 0[m
+ [m
+     inflows = [[m
+[31m-        txn for txn in transactions[m
+[32m+[m[32m        txn[m
+[32m+[m[32m        for txn in transactions[m
+         if txn.type == TransactionType.INFLOW[m
+     ][m
+ [m
+[31m-    # 1. Detect repeated identical inflows.[m
+[32m+[m[32m    if not inflows:[m
+[32m+[m[32m        return FraudSignal([m
+[32m+[m[32m            consent_id=consent_id,[m
+[32m+[m[32m            fraud_signal_id=str(uuid4()),[m
+[32m+[m[32m            generated_at=datetime.utcnow().isoformat() + "Z",[m
+[32m+[m[32m            risk_band=FraudRiskBand.LOW,[m
+[32m+[m[32m            confidence=0.0,[m
+[32m+[m[32m            explanation=[[m
+[32m+[m[32m                "No income transactions were available for manufactured-pattern analysis."[m
+[32m+[m[32m            ],[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # 1. Repeated identical income amounts[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+     amounts = [txn.amount for txn in inflows][m
+[32m+[m
+     repeated_amounts = [[m
+         amount[m
+         for amount, count in Counter(amounts).items()[m
+         if count >= 3[m
+     ][m
+ [m
+[31m-    if repeated_amounts:[m
+[31m-        risk_points += 30[m
+[31m-        explanations.append([m
+[31m-            "Multiple income transactions use identical amounts, "[m
+[31m-            "which may indicate a manufactured pattern."[m
+[31m-        )[m
+[32m+[m[32m    repeated_amount_pattern = bool(repeated_amounts)[m
+ [m
+[31m-    # 2. Detect highly recurring transactions.[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # 2. Highly recurring income transactions[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+     highly_recurring = [[m
+[31m-        txn for txn in inflows[m
+[32m+[m[32m        txn[m
+[32m+[m[32m        for txn in inflows[m
+         if txn.recurring_pattern_score >= 0.9[m
+     ][m
+ [m
+[31m-    if len(highly_recurring) >= 3:[m
+[31m-        risk_points += 25[m
+[31m-        explanations.append([m
+[31m-            "Several income transactions have unusually high "[m
+[31m-            "recurring-pattern scores."[m
+[31m-        )[m
+[32m+[m[32m    recurring_pattern = len(highly_recurring) >= 3[m
+ [m
+[31m-    # 3. Detect unusually concentrated income activity.[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # 3. Concentrated income activity[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+     dates = [[m
+         datetime.fromisoformat(txn.date).date()[m
+         for txn in inflows[m
+     ][m
+ [m
+[31m-    if dates:[m
+[31m-        unique_dates = len(set(dates))[m
+[32m+[m[32m    unique_dates = len(set(dates))[m
+[32m+[m
+[32m+[m[32m    concentrated_pattern = ([m
+[32m+[m[32m        len(inflows) >= 6[m
+[32m+[m[32m        and unique_dates <= 2[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Evidence composition[m
+[32m+[m[32m    #[m
+[32m+[m[32m    # Repetition and recurrence are intentionally weak on their own.[m
+[32m+[m[32m    # A normal salary can legitimately trigger both.[m
+[32m+[m[32m    #[m
+[32m+[m[32m    # Manufactured activity becomes more concerning when those consistency[m
+[32m+[m[32m    # signals occur together with unusually concentrated activity.[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m    consistency_count = sum([m
+[32m+[m[32m        [[m
+[32m+[m[32m            repeated_amount_pattern,[m
+[32m+[m[32m            recurring_pattern,[m
+[32m+[m[32m        ][m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    if repeated_amount_pattern:[m
+[32m+[m[32m        explanations.append([m
+[32m+[m[32m            "Income transactions contain repeated identical amounts."[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    if recurring_pattern:[m
+[32m+[m[32m        explanations.append([m
+[32m+[m[32m            "Several income transactions have highly recurring patterns."[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    if concentrated_pattern:[m
+[32m+[m[32m        explanations.append([m
+[32m+[m[32m            "Income activity is unusually concentrated across a small "[m
+[32m+[m[32m            "number of dates."[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Weak consistency evidence[m
+[32m+[m[32m    #[m
+[32m+[m[32m    # One consistency characteristic is not suspicious enough to affect[m
+[32m+[m[32m    # the risk band.[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m    if consistency_count == 2 and not concentrated_pattern:[m
+[32m+[m[32m        risk_points += 10[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Independent concentration evidence[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m    if concentrated_pattern:[m
+[32m+[m[32m        risk_points += 25[m
+[32m+[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Stronger co-occurrence rule[m
+[32m+[m[32m    #[m
+[32m+[m[32m    # Repeated identical amounts + highly recurring behaviour +[m
+[32m+[m[32m    # concentrated activity is materially more suspicious than any[m
+[32m+[m[32m    # characteristic in isolation.[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m    if ([m
+[32m+[m[32m        repeated_amount_pattern[m
+[32m+[m[32m        and recurring_pattern[m
+[32m+[m[32m        and concentrated_pattern[m
+[32m+[m[32m    ):[m
+[32m+[m[32m        risk_points += 45[m
+[32m+[m[32m        explanations.append([m
+[32m+[m[32m            "Multiple consistency signals occur together with unusually "[m
+[32m+[m[32m            "concentrated income activity."[m
+[32m+[m[32m        )[m
+ [m
+[31m-        if len(inflows) >= 6 and unique_dates <= 2:[m
+[31m-            risk_points += 35[m
+[31m-            explanations.append([m
+[31m-                "Income activity is unusually concentrated across "[m
+[31m-                "a small number of dates."[m
+[31m-            )[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+[32m+[m[32m    # Bound score[m
+[32m+[m[32m    # ------------------------------------------------------------------[m
+ [m
+     risk_points = min(risk_points, 100)[m
+ [m
+[36m@@ -82,6 +170,7 @@[m [mdef detect_fraud_patterns([m
+             "No strong manufactured transaction patterns were detected."[m
+         )[m
+ [m
+[32m+[m[32m    # Confidence reflects available transaction evidence, not fraud certainty.[m
+     confidence = min([m
+         1.0,[m
+         len(transactions) / 20,[m
