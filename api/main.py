@@ -1,112 +1,121 @@
-from dataclasses import asdict
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
+"""
+api/main.py
 
-from schemas.contracts import (
-    IncomeSeasonalityFlag,
-    Transaction,
-    TransactionHistoryPayload,
-    TransactionType,
+The FastAPI layer. Thin on purpose — every real decision happens in
+handlers.py, which is tested independently of this file. This module's
+only job is translating HTTP requests into calls to those functions and
+HTTP-appropriate error responses.
+
+NOTE: this file could not be run against a live server in the environment
+that built it (no network access to install FastAPI). The logic it calls
+into (handlers.py) was fully tested end-to-end against the real scoring
+and fraud engines. Run `pip install fastapi uvicorn` and
+`uvicorn api.main:app --reload` locally to bring the server up, then
+smoke-test each endpoint before relying on this in the demo.
+"""
+
+from dataclasses import asdict
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+from schemas.contracts import Transaction, TransactionHistoryPayload, TransactionType, IncomeSeasonalityFlag
+from api.handlers import (
+    ConsentNotFoundError,
+    ConsentNotValidError,
+    handle_grant,
+    handle_revoke,
+    handle_score,
 )
 
-from scoring.engine import calculate_affordability
-from scoring.fraud import detect_fraud_patterns
+app = FastAPI(title="TRACE API")
 
 
-class TraceHandler(BaseHTTPRequestHandler):
+# ---------------------------------------------------------------------------
+# Request bodies (thin — just enough to build the real dataclasses)
+# ---------------------------------------------------------------------------
 
-    def _send_json(self, status_code: int, data: dict) -> None:
-        body = json.dumps(data).encode("utf-8")
+class GrantRequest(BaseModel):
+    user_id: str
+    requesting_party_id: str
+    requesting_party_name: str
+    lookback_window_days: int = 180
+    duration_days: int = 30
 
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
 
-        self.wfile.write(body)
+class TransactionIn(BaseModel):
+    txn_id: str
+    date: str
+    type: str  # "INFLOW" | "OUTFLOW"
+    amount: float
+    category: str
+    recurring_pattern_score: float
 
-    def do_GET(self) -> None:
-        if self.path == "/api/health":
-            self._send_json(200, {"status": "ok"})
-            return
 
-        self._send_json(404, {"error": "Not found"})
+class ScoreRequest(BaseModel):
+    consent_id: str
+    account_ref: str
+    period_start: str
+    period_end: str
+    transactions: list[TransactionIn]
+    income_seasonality_flag: str
 
-    def do_POST(self) -> None:
-        if self.path != "/api/score":
-            self._send_json(404, {"error": "Not found"})
-            return
 
-        try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            raw_body = self.rfile.read(content_length)
-            data = json.loads(raw_body)
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
-            payload = self._build_payload(data)
+@app.post("/consent/grant")
+def grant(req: GrantRequest):
+    consent = handle_grant(
+        user_id=req.user_id,
+        requesting_party_id=req.requesting_party_id,
+        requesting_party_name=req.requesting_party_name,
+        lookback_window_days=req.lookback_window_days,
+        duration_days=req.duration_days,
+    )
+    return asdict(consent)
 
-            affordability = calculate_affordability(payload)
-            fraud = detect_fraud_patterns(
-                payload.consent_id,
-                payload.transactions,
-            )
 
-            self._send_json(
-                200,
-                {
-                    "affordability": asdict(affordability),
-                    "fraud": asdict(fraud),
-                },
-            )
-
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            self._send_json(
-                400,
-                {"error": f"Invalid request: {exc}"},
-            )
-
-        except Exception as exc:
-            self._send_json(
-                500,
-                {"error": f"Scoring failed: {exc}"},
-            )
-
-    @staticmethod
-    def _build_payload(data: dict) -> TransactionHistoryPayload:
-        transactions = [
+@app.post("/score")
+def score(req: ScoreRequest):
+    payload = TransactionHistoryPayload(
+        consent_id=req.consent_id,
+        account_ref=req.account_ref,
+        period_start=req.period_start,
+        period_end=req.period_end,
+        transactions=[
             Transaction(
-                txn_id=txn["txn_id"],
-                date=txn["date"],
-                type=TransactionType(txn["type"]),
-                amount=float(txn["amount"]),
-                category=txn["category"],
-                recurring_pattern_score=float(
-                    txn["recurring_pattern_score"]
-                ),
+                txn_id=t.txn_id,
+                date=t.date,
+                type=TransactionType(t.type),
+                amount=t.amount,
+                category=t.category,
+                recurring_pattern_score=t.recurring_pattern_score,
             )
-            for txn in data["transactions"]
-        ]
-
-        return TransactionHistoryPayload(
-            consent_id=data["consent_id"],
-            account_ref=data["account_ref"],
-            period_start=data["period_start"],
-            period_end=data["period_end"],
-            transactions=transactions,
-            income_seasonality_flag=IncomeSeasonalityFlag(
-                data["income_seasonality_flag"]
-            ),
-        )
-
-
-def run_server() -> None:
-    server = ThreadingHTTPServer(
-        ("localhost", 8000),
-        TraceHandler,
+            for t in req.transactions
+        ],
+        income_seasonality_flag=IncomeSeasonalityFlag(req.income_seasonality_flag),
     )
 
-    print("TRACE API running at http://localhost:8000")
-    server.serve_forever()
+    try:
+        affordability_signal, fraud_signal = handle_score(req.consent_id, payload)
+    except ConsentNotFoundError:
+        raise HTTPException(status_code=404, detail="Consent not found")
+    except ConsentNotValidError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    return {
+        "affordability_signal": asdict(affordability_signal),
+        "fraud_signal": asdict(fraud_signal),
+    }
 
 
-if __name__ == "__main__":
-    run_server()
+@app.post("/consent/{consent_id}/revoke")
+def revoke(consent_id: str):
+    try:
+        event = handle_revoke(consent_id)
+    except ConsentNotFoundError:
+        raise HTTPException(status_code=404, detail="Consent not found")
+
+    return asdict(event)
