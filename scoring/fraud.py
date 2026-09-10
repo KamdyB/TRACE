@@ -130,6 +130,10 @@ def detect_fraud_patterns(
     # Independent concentration evidence
     # ------------------------------------------------------------------
 
+    # Concentration alone is weak evidence and stays below the MEDIUM
+    # threshold; it only contributes materially when independent signals
+    # co-occur.
+
     if concentrated_pattern:
         risk_points += 25
 

@@ -6,12 +6,10 @@ handlers.py, which is tested independently of this file. This module's
 only job is translating HTTP requests into calls to those functions and
 HTTP-appropriate error responses.
 
-NOTE: this file could not be run against a live server in the environment
-that built it (no network access to install FastAPI). The logic it calls
-into (handlers.py) was fully tested end-to-end against the real scoring
-and fraud engines. Run `pip install fastapi uvicorn` and
-`uvicorn api.main:app --reload` locally to bring the server up, then
-smoke-test each endpoint before relying on this in the demo.
+NOTE: The API has been smoke-tested locally with Uvicorn against the
+consent, scoring, and revocation handlers. The FastAPI layer remains
+intentionally thin; scoring decisions are delegated to the handlers and
+scoring engine.
 """
 
 from dataclasses import asdict
